@@ -6,10 +6,10 @@ from app.utils.time_utils import format_timestamp
 
 
 class ResultBuilder:
-    def build(self, candidate: DialogueCandidate, frame_number: int, frame_path: Path) -> DetectionResult:
+    def build(self, candidate: DialogueCandidate, frame_number: int, frame_image_url: str) -> DetectionResult:
         return DetectionResult(
             timestamp=format_timestamp(candidate.start_seconds),
             frame_number=frame_number,
             extracted_text=candidate.text,
-            frame_image=str(frame_path.resolve()),
+            frame_image=frame_image_url,
         )
