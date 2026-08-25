@@ -5,6 +5,8 @@ from app.models.requests import DetectionRequest
 from app.models.responses import DetectionResult
 from app.pipeline.preprocessing import prepare_request
 from app.pipeline.validation import validate_public_video_url, validate_target
+from app.services.audio_enhancer import AudioEnhancer
+from app.services.audio_extractor import AudioExtractor
 from app.services.dialogue_matcher import DialogueMatcher
 from app.services.frame_extractor import FrameExtractor
 from app.services.result_builder import ResultBuilder
@@ -22,7 +24,11 @@ class DialogueDetector:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.downloader = VideoDownloader()
+        self.downloader = VideoDownloader(
+            cookies_file=settings.cookies_file,
+            cookies_from_browser=settings.cookies_from_browser,
+            download_proxy=settings.download_proxy,
+        )
         self.subtitles = SubtitleExtractor()
         self.transcriber = Transcriber(settings.whisper_model)
         self.matcher = DialogueMatcher(settings.match_threshold)
@@ -31,6 +37,8 @@ class DialogueDetector:
         self.result_validator = ResultValidator()
         self.timestamps = TimestampResolver()
         self.vad = VoiceActivityFilter()
+        self.audio_extractor = AudioExtractor()
+        self.audio_enhancer = AudioEnhancer()
 
     def detect(self, request: DetectionRequest) -> DetectionResult:
         validate_target(request.target)
@@ -40,7 +48,14 @@ class DialogueDetector:
         video_path = self.downloader.download(str(request.video_url), job_directory, self.settings.max_video_height)
         candidates = self.subtitles.extract(job_directory)
         if not candidates:
-            candidates = self.transcriber.transcribe(video_path)
+            # Extract mono 16 kHz wav from the video, optionally denoise it,
+            # then run Whisper on the cleaned audio for better accuracy.
+            wav_path = self.audio_extractor.extract_mono_wav(
+                video_path, job_directory / "audio.wav"
+            )
+            if self.settings.enable_noise_reduction:
+                wav_path = self.audio_enhancer.enhance(wav_path)
+            candidates = self.transcriber.transcribe(wav_path)
         candidates = self.vad.filter(candidates)
         match = self.matcher.best_match(request.target, candidates)
         frame_path = job_directory / "matched_frame.jpg"

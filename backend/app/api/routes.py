@@ -20,4 +20,4 @@ def detect_dialogue(request: DetectionRequest) -> DetectionResult:
     try:
         return detector.detect(request)
     except PipelineError as error:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
