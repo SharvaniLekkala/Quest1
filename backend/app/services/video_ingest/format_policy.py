@@ -26,10 +26,28 @@ def adaptive_stream_formats(max_height: int) -> str:
     )
 
 
-def format_attempts(max_height: int) -> list[str]:
+def progressive_formats(max_height: int) -> str:
+    """Single muxed files — some CDNs 403 separate video+audio or HLS fragments."""
+    height = int(max_height)
+    return (
+        f"b[height<={height}][ext=mp4]/"
+        f"b[height<={height}]/"
+        f"best[ext=mp4]/"
+        "best"
+    )
+
+
+def format_attempts(max_height: int, *, prefer_adaptive: bool = False) -> list[str]:
     """Strategies tried in order until a stream downloads successfully."""
-    return [
+    attempts = [
         height_limited_formats(max_height),
         adaptive_stream_formats(max_height),
+        progressive_formats(max_height),
         "best",
     ]
+    if prefer_adaptive:
+        # OK.ru commonly exposes signed HLS media. Trying it first avoids
+        # spending time on progressive variants the CDN may reject with 403.
+        attempts.remove(adaptive_stream_formats(max_height))
+        attempts.insert(0, adaptive_stream_formats(max_height))
+    return attempts

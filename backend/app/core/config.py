@@ -24,27 +24,13 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "Video Dialogue Detector"
-    app_version: str = "1.0.0"
-    debug: bool = True
-
     output_dir: Path = PROJECT_DIR / "outputs"
     cookies_file: Path | None = None
     cookies_from_browser: str | None = None
     download_proxy: str | None = None
-    whisper_model: str = "tiny"
-    whisper_device: str = "auto"
-    whisper_compute_type: str = "int8"
-
-    match_threshold: float = 70.0
-    semantic_match_threshold: float = 0.75
+    whisper_model: str = "small"
+    match_threshold: float = 60.0
     max_video_height: int = 720
-
-    enable_vad: bool = True
-    enable_noise_reduction: bool = True
-    enable_semantic_fallback: bool = True
-    enable_subtitle_extraction: bool = True
-    enable_speaker_diarization: bool = False
 
 
 settings = Settings()

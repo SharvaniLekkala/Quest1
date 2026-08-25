@@ -1,82 +1,168 @@
 # Video Dialogue Detector
 
-**Project Overview**
+Find the frame in a public video where a requested line of dialogue is spoken.
+The project has a React/Vite web client and a local FastAPI service. The service
+downloads a public video, reads captions when available, falls back to local
+Faster-Whisper transcription, ranks dialogue candidates, and saves one JPEG
+frame at the best match.
 
-This repository implements a tool that locates a specific line of dialogue within a publicly‑available video and extracts the exact frame where it occurs. It combines a React front‑end for user interaction with a FastAPI back‑end that downloads videos via `yt-dlp`, processes subtitles or runs Whisper transcription, matches the target phrase, and returns the timestamp, frame number, extracted text, and a JPEG image.
+Only process videos you are permitted to download. The service supports public,
+non-DRM watch URLs that `yt-dlp` can resolve; private, local, and reserved-network
+URLs are rejected.
 
-Find the frame in a public video where a requested line of dialogue occurs. The project includes a React interface and a modular FastAPI backend.
-
-Input:
-
-```json
-{
-  "video_url": "https://public-video.example/watch?id=123",
-  "target": "the dialogue text to find"
-}
-```
-
-Output: exactly one result, returned by the API and saved as JSON.
-
-```json
-{
-  "timestamp": "00:01:23.456",
-  "frame_number": 2504,
-  "extracted_text": "The dialogue spoken at this point.",
-  "frame_image": "/outputs/job_<id>/matched_frame.jpg"
-}
-```
-
-## Features implemented
-
-- React form for a public video URL and dialogue text.
-- Result UI that prints the timestamp, frame number, extracted text, and matched image.
-- Generic public-video ingestion through `yt-dlp` (browser-like TLS via `curl_cffi` when hosts fingerprint handshakes); playlists are disabled. Any publicly accessible watch URL the extractor can resolve is accepted, not only YouTube.
-- English subtitle and automatic-caption parsing first for efficient long-video processing; other languages fall back to local transcription.
-- Local Faster-Whisper transcription fallback when subtitles are unavailable.
-- Voice-activity filtering, language-detection, audio-processing, diarization, and cache extension points.
-- Lexical/semantic-style dialogue scoring with a configurable confidence threshold.
-- Deterministic ambiguity handling: the highest-scoring match wins; ties use the earliest occurrence.
-- Timestamp-based OpenCV frame extraction.
-- One job folder per request containing source media, the JPEG frame, and `result.json`.
-- Input/output validation, readable API errors, local URL/private-IP rejection, CORS, and static image serving.
-- Git protection for local configuration, secrets, credentials, dependencies, caches, and generated artifacts.
-
-## Project structure
+## Repository layout
 
 ```text
 video-dialogue-detector/
 ├── backend/
-│   ├── .env.example              # Safe configuration template
-│   ├── requirements.txt
+│   ├── .env.example             # Safe configuration template
+│   ├── requirements.txt         # Python runtime dependencies
 │   └── app/
-│       ├── api/                  # FastAPI routes
-│       ├── core/                 # Configuration and logging
-│       ├── models/               # Request, response, error, candidate models
-│       ├── pipeline/             # Validation, preprocessing, orchestration helpers
-│       ├── services/             # Download, subtitles, transcription, matching, frames
-│       └── utils/                # Time, text, file, audio helpers
+│       ├── api/routes.py        # HTTP endpoints and error conversion
+│       ├── core/                # Settings and logging setup
+│       ├── models/              # Request, response, candidate, and error models
+│       ├── pipeline/            # Request validation and detection orchestration
+│       ├── services/            # Downloading, transcription, matching, framing
+│       │   └── video_ingest/    # yt-dlp format and HTTP transport policies
+│       └── utils/               # Text, timestamp, and JSON helpers
 ├── frontend/
-│   ├── src/App.jsx               # React form and result view
-│   ├── src/styles.css            # Basic responsive styling
-│   ├── package.json
-│   └── vite.config.js
-├── outputs/                      # Created at runtime; ignored by Git
-├── run.py                        # Starts the backend API
+│   ├── src/                     # React UI and styles
+│   ├── index.html               # Vite document entry point
+│   ├── package.json             # Frontend scripts and dependencies
+│   └── vite.config.js           # Vite configuration
+├── tests/                       # Focused unit tests for active runtime behavior
+├── run.py                       # Local backend launcher
 └── README.md
 ```
 
-## Prerequisites
+Generated folders such as `outputs/`, Python virtual environments, Node modules,
+and build output are intentionally excluded from version control and recreated as
+needed.
 
-- Python 3.10+ (3.11 or 3.12 recommended).
-- Node.js 20+ and npm for the React/Vite frontend.
-- FFmpeg support is required for the common separate video/audio streams provided by YouTube and many other platforms. `imageio-ffmpeg` installs a bundled executable with the backend requirements; a system [FFmpeg](https://ffmpeg.org/download.html) installation on `PATH` is also supported and preferred for widest compatibility.
-- Internet access for public-video downloads and the first Whisper model download. Backend requirements include `curl_cffi` so the downloader can impersonate a browser TLS fingerprint on hosts that drop Python's default SSL handshake.
+## Architecture and design choices
 
-Only submit videos you are permitted to download and process. URLs must be public, resolvable by the generic extractor (`yt-dlp`), and not DRM-protected. Private, access-controlled, local, or reserved-network URLs are rejected or will fail to download.
+### Why this architecture
 
-## Install
+The system separates HTTP handling, orchestration, domain models, and media
+operations. This keeps the request path readable and lets a provider-specific
+downloader, matching algorithm, or UI be replaced without changing the rest of
+the application.
 
-Open PowerShell in the project root:
+The application is deliberately synchronous and local. Downloading, caption
+parsing, transcription, and frame extraction are CPU/network-heavy jobs, but a
+synchronous design is easier to run and demonstrate for one video at a time.
+For a multi-user deployment, place `DialogueDetector.detect` behind a job queue
+and move generated outputs to object storage.
+
+### Request-to-result map
+
+```text
+React form
+  │ POST /api/v1/detect { video_url, target }
+  ▼
+api/routes.py → pipeline/detector.py
+  │ validate → download → captions / Whisper → score → select frame → persist
+  ▼
+outputs/job_<id>/{source media, captions, matched_frame.jpg, result.json}
+  │
+  └── DetectionResult JSON → React result and image preview
+```
+
+### Backend module map
+
+| Module | Used by | Responsibility and reason for the choice |
+|---|---|---|
+| `run.py` | Developer command | Starts Uvicorn in development-reload mode. It excludes `outputs/`, so generated media does not create noisy file-watch events or trigger reloads. |
+| `app/main.py` | Uvicorn | Creates FastAPI, configures loopback-only CORS for Vite, mounts generated output files, and registers routes. |
+| `app/api/routes.py` | FastAPI | Keeps endpoint definitions thin. It converts expected `PipelineError` failures into HTTP 422 responses. |
+| `app/core/config.py` | App startup and detector | Loads typed settings from `backend/.env`; local paths are normalized once. |
+| `app/core/logging_config.py` | `main.py` | Defines the timestamped console log format used by the `[progress]` messages. |
+| `app/models/requests.py` | `/detect` | Defines and validates the public URL and target dialogue payload. |
+| `app/models/responses.py` | Result builder and API | Defines the stable response contract, including score, threshold state, caution, and processing time. |
+| `app/models/candidates.py` | Captions, Whisper, matcher | A small immutable transcript segment: text, start/end seconds, and score. |
+| `app/models/errors.py` | Pipeline/services | Separates expected user-facing processing failures from unexpected server errors. |
+| `app/pipeline/preprocessing.py` | Detector | Normalizes whitespace before matching while preserving the request model. |
+| `app/pipeline/validation.py` | Detector | Rejects malformed and local/private URLs before a downloader can access them. |
+| `app/pipeline/detector.py` | Route | The orchestration layer: creates a job directory, calls each service, chooses the best candidate, writes output, and measures elapsed time. |
+| `app/services/video_downloader.py` | Detector | Job-level download facade. It discovers the downloaded media, obtains captions, and optionally retries via user-configured cookies/proxy. |
+| `app/services/video_ingest/ytdlp_extractor.py` | Downloader | Encapsulates `yt-dlp` options, bounded retry logic, download progress reporting, and provider errors. |
+| `app/services/video_ingest/format_policy.py` | Extractor | Keeps format strategies readable. It prefers adaptive HLS for OK.ru because its public CDN commonly rejects progressive variants. |
+| `app/services/video_ingest/transport.py` | Extractor | Supplies browser-like headers, origin/referer, and optional TLS impersonation for hosts with anti-bot checks. |
+| `app/services/subtitle_extractor.py` | Detector | Parses downloaded WebVTT captions first; captions are faster and generally more accurate than transcription. |
+| `app/services/transcriber.py` | Detector | Uses Faster-Whisper only when captions are missing or weak, avoiding unnecessary model work. |
+| `app/services/vad.py` | Detector | Removes empty/near-empty dialogue candidates before scoring. |
+| `app/services/semantic_matcher.py` | Dialogue matcher | Combines normalized fuzzy similarity and word overlap. It is lightweight, deterministic, and has no remote embedding dependency. |
+| `app/services/candidate_ranker.py` | Dialogue matcher | Selects highest score and then earliest occurrence for deterministic repeated-dialogue handling. |
+| `app/services/dialogue_matcher.py` | Detector | Scores candidates and preserves the best below-threshold candidate instead of returning a fake first-frame result. |
+| `app/services/timestamp_resolver.py` | Detector | Turns an imperfect subtitle/ASR span into a padded, phrase-focused seek window. |
+| `app/services/frame_extractor.py` | Detector | Samples frames around speech, preferring temporal alignment, sharpness, and scene stability rather than blindly taking the first frame. |
+| `app/services/result_builder.py` | Detector | Converts internal candidate data into the public response and creates a below-threshold caution. |
+| `app/services/result_validator.py` | Detector | Verifies that a complete response and non-empty JPEG exist before success is returned. |
+| `app/utils/text_utils.py` | Matching/timestamps | Applies a single consistent text-normalization rule. |
+| `app/utils/time_utils.py` | Result builder | Formats seconds as a user-readable timestamp. |
+| `app/utils/file_utils.py` | Detector | Writes `result.json` consistently. |
+
+### Frontend module map
+
+| File | Responsibility |
+|---|---|
+| `frontend/src/main.jsx` | React bootstrap and global stylesheet import. |
+| `frontend/src/App.jsx` | Form state, API request, loading/error handling, caution display, and result rendering. |
+| `frontend/src/styles.css` | Responsive, dependency-free visual styling for the page, forms, warning, and image. |
+| `frontend/index.html` | Vite HTML shell and browser metadata. |
+| `frontend/vite.config.js` | Vite/React development and build configuration. |
+| `frontend/package.json` / `package-lock.json` | Reproducible frontend scripts and dependency versions. |
+
+### Important implementation decisions
+
+- **Captions before Whisper:** captions avoid model startup time and usually provide
+  better time boundaries. Whisper is a fallback so the app still works when
+  captions are unavailable or not a good match.
+- **Best-match fallback, not a false failure:** a score below `MATCH_THRESHOLD`
+  is still useful information. The API returns that best candidate with
+  `threshold_passed: false` and a caution, rather than falsely reporting
+  `"Failed to fetch"` and extracting frame zero.
+- **Deterministic ranking:** the same input always gives the same answer; equal
+  scores choose the earliest dialogue occurrence.
+- **Frame window instead of an exact transcript timestamp:** subtitle and ASR
+  timestamps drift. Sampling a short window and scoring frame quality reduces
+  cut frames, blurry images, and frames dominated by subtitle text.
+- **Generic public-video ingestion:** `yt-dlp` supports many sites, so the
+  project avoids hard-coding a separate downloader per provider. Browser-like
+  transport and bounded retries address common public-host failures without
+  trying to bypass private or DRM-protected content.
+- **Local-only defaults:** CORS accepts only `localhost`/`127.0.0.1`; outputs are
+  served locally; cookie and proxy settings are opt-in and ignored by Git.
+
+## Runtime flow
+
+1. `POST /api/v1/detect` validates and normalizes the public URL and dialogue.
+2. `VideoDownloader` resolves and downloads media and, when available, captions.
+   OK.ru links prefer signed adaptive/HLS streams before progressive variants.
+3. Caption segments are parsed and voice-filtered. If captions are absent or the
+   caption match is below the configured threshold, Faster-Whisper transcribes
+   the downloaded media.
+4. `DialogueMatcher` scores candidates and selects the highest score; ties use
+   the earliest occurrence.
+5. `TimestampResolver` identifies a focused seeking window and `FrameExtractor`
+   writes `matched_frame.jpg`.
+6. The service validates the result, writes `result.json`, and returns the
+   result to the client.
+
+The backend logs `[progress]` messages for each stage plus throttled media
+download progress. Completion includes elapsed server-side processing time.
+
+## Requirements
+
+- Python 3.10+ (Python 3.11 or 3.12 recommended)
+- Node.js 20+ and npm
+- Internet access for public-video downloads and the initial Whisper model fetch
+- FFmpeg. `imageio-ffmpeg` supplies a bundled executable, but a system FFmpeg
+  installation on `PATH` is recommended.
+
+## Setup
+
+From the repository root:
 
 ```powershell
 cd C:\Users\Sharvani\Desktop\Quest1\video-dialogue-detector
@@ -90,11 +176,11 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-Copy-Item .env.example .env -Force
+Copy-Item .env.example .env
 cd ..
 ```
 
-If PowerShell prevents activation, run this once in that shell and retry:
+If PowerShell blocks activation, run the following once in that shell:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
@@ -110,66 +196,40 @@ cd ..
 
 ## Configuration
 
-Set optional values in `backend/.env`. Do not commit it.
+Create `backend/.env` from `.env.example`. It is local-only and must not be
+committed.
 
 ```ini
-# Directory for generated job artifacts. Default: <project>/outputs
+# Runtime artifacts. Relative paths are resolved from backend/.
 OUTPUT_DIR=outputs
 
-# Whisper model used when subtitles are unavailable.
-# Options: tiny (fastest), base, small, medium, large-v3 (most accurate).
-# Default: tiny — good balance of speed and accuracy for short clips.
-WHISPER_MODEL=tiny
+# Faster-Whisper model: tiny, base, small, medium, or large-v3.
+WHISPER_MODEL=small
 
-# Minimum score from 0 to 100. Higher values require closer text.
-# When the best candidate scores below this threshold the API still returns
-# the result but marks its confidence as "medium" or "low".  Default: 70.
-MATCH_THRESHOLD=70
+# Minimum match score (0–100) considered a passing match.
+MATCH_THRESHOLD=82
 
-# Download resolution limit. Lower values reduce disk and processing time.
+# Maximum source-video height. Lower values reduce download size and processing time.
 MAX_VIDEO_HEIGHT=720
 
-# Enable lightweight noise reduction on extracted audio before transcription.
-# Uses the noisereduce library (~0.2 s per minute of audio).  Default: true.
-ENABLE_NOISE_REDUCTION=true
+# Optional Netscape cookie file for sites that require an authenticated session.
+# COOKIES_FILE=C:\secure\provider-cookies.txt
+
+# Or read cookies from a closed local browser, for example chrome.
+# COOKIES_FROM_BROWSER=chrome
+
+# Optional HTTP/SOCKS proxy. Leave empty for the direct connection.
+# DOWNLOAD_PROXY=
 ```
 
-### Score and confidence
+Do not share cookie files or route authenticated cookies through an untrusted
+proxy.
 
-The API response now includes two extra fields:
+## Run locally
 
-```json
-{
-  "timestamp": "00:01:23.456",
-  "frame_number": 2504,
-  "extracted_text": "The dialogue spoken at this point.",
-  "frame_image": "/outputs/job_<id>/matched_frame.jpg",
-  "score": 73.2,
-  "confidence": "medium"
-}
-```
+Use two terminals.
 
-| Score range | Confidence label |
-|-------------|-----------------|
-| 80 – 100    | `high`          |
-| 60 – 79     | `medium`        |
-| 0 – 59      | `low`           |
-
-Even when the score is below the threshold the API returns the best match
-instead of failing with HTTP 422. The client can use `confidence` to decide
-how to present the result (e.g. show a warning badge for "medium" or "low").
-
-The frontend defaults to `http://127.0.0.1:8000/api/v1`. To use another API, create ignored file `frontend/.env.local`:
-
-```ini
-VITE_API_URL=https://your-api.example/api/v1
-```
-
-## Run the project
-
-Use two PowerShell windows.
-
-### Terminal 1 — backend API
+Backend:
 
 ```powershell
 cd C:\Users\Sharvani\Desktop\Quest1\video-dialogue-detector
@@ -177,37 +237,39 @@ cd C:\Users\Sharvani\Desktop\Quest1\video-dialogue-detector
 python run.py
 ```
 
-The API runs at `http://127.0.0.1:8000`. Opening it directly shows service links; use `/docs` for API documentation. The React user interface runs separately on port `5173`.
+The API listens on `http://127.0.0.1:8000`; interactive OpenAPI documentation
+is at `http://127.0.0.1:8000/docs`.
 
-### Terminal 2 — React frontend
+Frontend:
 
 ```powershell
 cd C:\Users\Sharvani\Desktop\Quest1\video-dialogue-detector\frontend
 npm run dev
 ```
 
-Open [http://127.0.0.1:5173](http://127.0.0.1:5173). Paste a public video URL, enter a line of dialogue, and select **Find frame**.
+Open the Vite address printed in the terminal, normally
+`http://127.0.0.1:5173`.
 
-## Verify it is working
+To point the frontend at a different API, create `frontend/.env.local`:
 
-### API health check
+```ini
+VITE_API_URL=http://127.0.0.1:8000/api/v1
+```
+
+## API
+
+### Health check
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8000/api/v1/health
 ```
 
-Expected response:
-
-```json
-{"status":"ok"}
-```
-
-### Send a request directly
+### Detect a dialogue frame
 
 ```powershell
 $body = @{
-  video_url = "<public-video-url>"
-  target = "<dialogue text>"
+  video_url = "https://example.com/public-video"
+  target = "the dialogue to locate"
 } | ConvertTo-Json
 
 Invoke-RestMethod -Method Post `
@@ -216,66 +278,51 @@ Invoke-RestMethod -Method Post `
   -Body $body
 ```
 
-Success returns HTTP `201` and the four-field result. Open `http://127.0.0.1:8000` plus the returned `frame_image` value to inspect the JPEG. Its job folder also contains the persisted `result.json`.
+Successful requests return HTTP `201` with one best result:
 
-### Build the frontend
+```json
+{
+  "timestamp": "00:01:23.456",
+  "frame_number": 2504,
+  "extracted_text": "The closest dialogue segment.",
+  "frame_image": "/outputs/job_<id>/matched_frame.jpg",
+  "score": 73.2,
+  "confidence": "medium",
+  "threshold_passed": false,
+  "caution": "Best available match did not pass the configured 82% threshold and may not be accurate.",
+  "processing_time_seconds": 42.31
+}
+```
+
+A below-threshold candidate remains a valid response: the service returns the
+best available match and the UI shows the caution beneath the result heading.
+It never substitutes a fake first-frame result. A genuine inability to download,
+transcribe, or extract spoken dialogue returns HTTP `422` with a descriptive
+`detail` message.
+
+## Tests and verification
+
+Run the focused tests after activating the backend environment:
+
+```powershell
+$env:PYTHONPATH = "$PWD\backend"
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+Build the frontend production bundle:
 
 ```powershell
 cd frontend
 npm run build
 ```
 
-This creates `frontend/dist/`, which is intentionally ignored by Git.
+## Operational notes
 
-## API reference
-
-| Endpoint | Method | Purpose |
-| --- | --- | --- |
-| `/api/v1/health` | `GET` | Lightweight readiness check. |
-| `/api/v1/detect` | `POST` | Download, locate dialogue, extract a frame, and save JSON. |
-| `/docs` | `GET` | Interactive FastAPI/OpenAPI documentation. |
-| `/outputs/...` | `GET` | Generated local artifacts, including matched images. |
-
-`POST /api/v1/detect` expects:
-
-```json
-{
-  "video_url": "https://example.org/public-video",
-  "target": "the exact or near-exact dialogue to find"
-}
-```
-
-If processing cannot complete, `/detect` returns HTTP `422` with a descriptive `detail`. Typical causes: unsupported/private URL, provider rate-limiting that also blocks video download, unavailable captions plus failed transcription, no speech, low-confidence text match, or unreadable video frame. A subtitle-only rate limit falls back to local Whisper transcription.
-
-Some providers may temporarily reject automated requests, returning errors such as HTTP `429`, Windows `10054` (connection forcibly closed), or curl error `35` / `SSL_ERROR_SYSCALL`. The downloader retries bounded transient failures using current Chrome, Firefox, and Edge TLS profiles where supported, and uses yt-dlp's native HLS downloader for signed HLS streams so fragments keep the same request context. A TLS reset occurs before HTTP is established: it is not a certificate error, so `nocheckcertificate` and repeated retries cannot bypass it. Confirm that the exact public URL opens in a normal browser on the same machine and network, remove any untrusted `DOWNLOAD_PROXY`, and retry later or from a network where the public page is available.
-
-For a provider that opens in your own browser only after sign-in, you may export a Netscape-format cookies file and set its local, ignored path with `COOKIES_FILE=C:\secure\provider-cookies.txt` in `backend/.env`. Never commit or share this file: it grants access to your signed-in browser session. This option cannot override a provider or network that closes all connections before authentication.
-
-As an alternative to exporting a file, set `COOKIES_FROM_BROWSER=chrome` (or another yt-dlp-supported browser) in `backend/.env` after fully closing that browser. This is a generic transport option for sites whose public media stream still requires the session cookies created by a normal browser. Do not set both cookie options unless you intentionally want the file to take precedence.
-
-If a network requires it, `DOWNLOAD_PROXY` accepts an HTTP or SOCKS proxy URL and is applied uniformly to public-video requests. Leave it unset for the normal network connection. Do not send browser cookies through a proxy you do not trust.
-
-## Processing flow
-
-1. Validate and normalize the request.
-2. Download the source video and available captions.
-3. Parse captions, or extract mono 16 kHz audio and optionally apply noise reduction, then transcribe locally with Faster-Whisper.
-4. Filter empty speech segments and score candidates against the target dialogue.
-5. Select one candidate: highest score, then earliest timestamp for ties. If the score is below the threshold, return it anyway with a `"medium"` or `"low"` confidence label.
-6. Seek to that timestamp, save the JPEG, validate it, and write `result.json`.
-
-For variable-frame-rate media, timestamp seeking is the reliable reference. The JPEG and timestamp are authoritative; encoded frame numbers can vary slightly by decoder.
-
-## Security and Git hygiene
-
-`.gitignore` excludes `.env` files, credential folders, private keys/certificates, virtual environments, Python caches, npm dependencies, npm cache, built frontend files, and generated video outputs. Keep API tokens, private URLs, and other sensitive data only in ignored local configuration files.
-
-## Troubleshooting
-
-- **`[SSL: UNEXPECTED_EOF_WHILE_READING]`** — the host dropped the TLS handshake (common TLS fingerprinting). Confirm `curl_cffi` is installed so yt-dlp can impersonate a browser. Do not bind `source_address` on Windows; that combination can crash curl_cffi.
-- **HTTP 403 on a media URL** — the page may have resolved, but that stream is blocked. The extractor retries adaptive (HLS/DASH) formats automatically. Session cookies (`COOKIES_FILE`) still help when a “public” page actually requires a logged-in view.
-- **Connection reset / `WinError 10054`** — transient anti-bot or rate limiting; the downloader retries with backoff. Switch networks or retry later if it persists.
-
-## Current scope
-
-This is a synchronous, local single-video implementation. Production deployment should add authentication, rate limits, queue workers, object storage, a database, output-retention cleanup, strict DNS-aware domain allow-listing, and a dedicated embedding model for robust paraphrase matching.
+- First transcription can take longer because Faster-Whisper may download and
+  initialize a model.
+- Public video providers can rate-limit, region-block, or reject automation.
+  The downloader uses browser-like headers/TLS profiles where available and
+  retries bounded transient failures; it cannot bypass private access or DRM.
+- Each request creates an `outputs/job_<id>/` directory containing source media,
+  captions, the extracted image, and `result.json`. Treat it as disposable
+  runtime data and clean it according to your storage policy.

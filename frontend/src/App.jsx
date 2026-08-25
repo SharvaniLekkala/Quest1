@@ -72,9 +72,12 @@ export default function App() {
         {result && (
           <section className="result" aria-live="polite" aria-label="Detection result">
             <h2>Match found</h2>
+            {result.caution && <p className="message caution" role="status">{result.caution}</p>}
             <dl>
               <div><dt>Timestamp</dt><dd>{result.timestamp}</dd></div>
               <div><dt>Frame number</dt><dd>{result.frame_number}</dd></div>
+              <div><dt>Match score</dt><dd>{result.score}% ({result.confidence})</dd></div>
+              <div><dt>Processing time</dt><dd>{result.processing_time_seconds.toFixed(2)} seconds</dd></div>
               <div className="full-width"><dt>Extracted text</dt><dd>{result.extracted_text}</dd></div>
             </dl>
             <img src={imageUrl(result.frame_image)} alt={`Frame at ${result.timestamp}`} />

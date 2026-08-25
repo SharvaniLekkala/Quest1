@@ -16,15 +16,14 @@ class DialogueMatcher:
 
     def best_match(self, target: str, candidates: list[DialogueCandidate]) -> DialogueCandidate:
         if not candidates:
-            raise PipelineError("No speech or subtitles were found in the video.")
+            raise PipelineError("No spoken dialogue could be extracted from this video.")
+            
         best = self.ranker.select_one([self.semantic_matcher.score(target, candidate) for candidate in candidates])
+        
         if best.score < self.threshold:
-            # Instead of raising an error, log the low score and return the best
-            # candidate anyway.  The API response now includes the score so the
-            # client can decide how to present a low-confidence result.
             logger.warning(
                 "Best dialogue match score %.1f is below threshold %.1f — "
-                "returning best-effort result",
+                "returning fallback result",
                 best.score,
                 self.threshold,
             )
