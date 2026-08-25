@@ -1,0 +1,66 @@
+ANTIGRAVITY
+1. Prepare a structure for the project that basically takes in input of a publicly available URL of a long video and outputs exact frame, text, timestamp, frame number and image at that moment. Input: video <URL> target <dialogue text> Output: ONE result -> {timestamp, frame_number, extracted_text, frame_image} as a json file generated. I want the code to be modular, scalable easily. I want a working front end and backend so that i dont want to have cmd inputs. Give me the current inside architecture proper and then the project structure and along with a single cmd to create the full folders and the subfiles in it, then we shall proceed further.
+2. Give me a single line command to create all the files in the directory at once. dont create unnecessary files now, only the structure which we actually need for the application.
+3. Lets go ahead with the backend development first. Give me the options and trade offs and challenges in solving this problem in different ways using Whisper / AI agents / ML models / pre trained models / huggingface models. I want the full product to be lightweight and fast as well.
+4. In different vidoes there might be noise in the audio as well i need to tackle all of that too, noise in the audio. Similar to these situations that are ambiguos are there any situations that i might be facing during this flow?
+5. Start with the configuration and application entry point. Keep the FastAPI main.py very small and make sure the actual detection logic is not sitting inside the API route itself.
+6. now create the API route for this. I want the input to be video url + target dialogue and the output should be only one result.
+7. Implement the detector/orchestrator. Keep the pipeline in one place but dont put all the actual logic there, seperate the services properly.
+8. use yt-dlp for downloading the public videos. Also think about long videos and dont keep everything in memory if we dont need to.
+9.For captions, first check if subtitles are available. If yes use them, if not then use Whisper. This should make it faster for videos where captions already exist.
+10. Make both caption and whisper output same format with text + start/end timestamps so the next part doesnt care where it came from. do the matching part. Exact string match wont be enough because whisper can give slightly different text. use fuzzy matching and maybe word overlap too.
+11.now test the matching with some different public videos first like normal talking videos, movies and music videos. I want to see where its actually failing before we change more things. also check captions and whisper seperately so we know which one is causing the issue.
+12. I am getting cases where it says failed to fetch and some times it just returns frame 1 even when the dialogue is somewhere in the middle of the video. check the whole flow and find where the wrong value is coming from, dont just change the frame code randomly.
+13. test some difficult videos also, like background music, noisy audio, people talking together, low voice etc. I want to know how much this is affecting the result and what we can do without making the project too heavy.
+14. add some temporary print/logging so i can see what text it matched, what timestamp it picked and what frame it is trying to get. I need this for debugging now, we can remove the extra stuff once its working properly.
+15. continue from the current code and fix the frame 1 issue first. check how the timestamp is becoming the frame number and also check the video fps. I think somewhere the timestamp is becoming 0 and then it is giving frame 1 even when the dialogue is much later
+16. I got this error when running it
+ModuleNotFoundError: No module named 'rapidfuzz'
+check why rapidfuzz is being imported but is not installed. also check the requirements file properly and dont just install it manually because the final repo should have all the needed packages
+17. the timestamp from captions may not be exactly where the dialogue is actually happening. try checking a small time around the matched timestamp and pick a better frame. keep it small because long videos are already taking alot of time
+18. test repeated dialogue and short dialogue also. fuzzy matching can give a good score to the wrong sentence sometimes so make sure it is not just picking the first thing that looks similar
+19. I am also seeing this warning
+WARNING: Ignoring invalid distribution ~orch
+check if this is actually coming from my project or from my python environment. dont add or remove torch randomly just because of this warning
+20. improve the text comparison for punctuation and capital letters and extra spaces and small whisper mistakes. But keep the actual extracted text unchanged because that is what i want to show in the result
+21. also test when the dialogue is not present at all. right now i dont want it picking some random sentence just because it is the closest match. if the match is weak handle it properly instead of pretending it is correct
+22.I am getting these logs while the server is running
+INFO:     Started reloader process
+INFO:     Started server process
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+these are fine right but explain what each one means and keep the useful ones
+23. the bigger issue is this keeps coming again and again while downloading
+INFO:     watchfiles.main 1 change detected
+INFO:     watchfiles.main 1 change detected
+INFO:     watchfiles.main 5 changes detected
+check why this is happening. I think the downloaded files are inside the folder that uvicorn is watching and it keeps thinking the code changed
+24. yes fix that but i still want reload when i change actual code. dont remove reload completely just make sure generated video files and outputs dont keep triggering it
+25. now test the captions and whisper flow again. captions should be used when available because whisper for a long video is taking too much time. if captions fail then whisper should still be able to continue
+26. I also want the time taken added now. Start when the request begins and stop when the final frame is ready. show the total processing time in the final response because i want to compare different videos
+27. the frame detection is accurate for some videos but not for many. specially music videos it is mostly failing to fetch the correct frame. check the timestamp and frame selection properly and try to make it a little more accurate without making the whole thing very slow
+28. now add the final result structure. I only want the best match as the output with timestamp and frame number and extracted text and frame image. Keep the other possible matches internally for deciding the best one
+29.add the match score too because when the result is wrong i need some way to understand whether the system was actually confident or it just picked the closest thing
+30.if the score is very low dont say that the dialogue was definitely found. return the best result only but make it clear that the match may not be accurate. this is better than returning frame 1 or some random result
+31.connect this properly to the frontend now. I want to enter the URL and dialogue there and click one button. no cmd input should be needed for the actual detection
+32.I am testing this with an OK.ru public video and getting this exact error
+ERROR: [Odnoklassniki] 248244667877: Unable to download webpage: Failed to perform, curl: (35) BoringSSL SSL_connect: Connection closed abruptly (SSL_ERROR_SYSCALL; error queue empty) in connection to ok.ru:443.
+check what this actually means. dont assume it is a wrong URL because youtube public videos are working
+33.The OK.ru issue is still happening after retrying. check whether the proxy setting can be causing the connection reset and check the downloader settings too. I dont want to add some extension or browser plugin just to make one website work
+I currently have this in my env
+DOWNLOAD_PROXY=socks5://45.74.31.30:8082
+check if this can be causing the OK.ru problem. if it is not needed then make the proxy optional and dont hardcode anything
+34.dont fix the SSL error by just disabling certificate verification. Try a proper approach first and if the website is actually blocking the connection then give a clear error instead of pretending retries will solve it
+35.Try current Chrome and Firefox and Edge browser profiles for the downloader if that helps with the connection. Keep it generic though because i dont want some ugly OK.ru specific code added only for this one URL
+36.if the connection still gets blocked after those attempts then handle the error properly. retries are fine but after the retries fail i want the user to know that the provider or network is blocking the request
+37.check the yt-dlp version too because the error itself says to confirm the latest version. dont downgrade anything without a reason
+38.Now test the full thing again with youtube and OK.ru. youtube should keep working even if the OK.ru request fails. dont let one unsupported provider break the rest of the application
+39.the main detection is working better now. clean up the temporary debugging code and files we added while checking the frame 1 issue. keep the useful progress logs and error messages because i still need them when testing
+40.do one proper test with a normal video and one with no matching dialogue and one where the dialogue happens much later and one music video. check that it doesnt silently return frame 1 when something fails
+41.also check the output from a successful request. I want one best result only and it should have the timestamp and frame number and extracted text and frame image and score and time taken
+42.make sure the frame image actually matches the timestamp and frame number being returned. I dont want the text match to be correct while the image is from some other point in the video
+43.update the README with the actual problems we found during development too. mention the frame 1 issue and caption failures and Whisper fallback and noisy audio and music videos and provider connection problems. explain why we added each thing in simple words
+44.run the basic checks and fix actual errors only. dont add extra features at this point because i want to finish the working model
+45.before pushing check the repo carefully. remove downloaded videos and generated frames and .env and cookies and venv and cache and old debug files. only keep the actual source and required config and tests and README
+46.finally make sure the README explains the whole roadmap and which file is used at each stage. I need to be able to explain why the project is structured this way and what happens after i click the search button
+47.dont change the working behaviour now unless you find an actual bug. just make the final repo clean and stable and make sure the final output is only the best match with the extra information we added for checking accuracy
