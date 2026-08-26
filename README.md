@@ -33,6 +33,7 @@ video-dialogue-detector/
 ├── tests/                       # Focused unit tests for active runtime behavior
 ├── run.py                       # Local backend launcher
 └── README.md
+prompts.txt and approach.txt also added
 ```
 
 Generated folders such as `outputs/`, Python virtual environments, Node modules,
