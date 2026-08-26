@@ -1,0 +1,330 @@
+﻿
+1. PROJECT OBJECTIVE
+--------------------
+Given a public video URL and a line of dialogue (text), find the exact moment
+in the video when that dialogue is spoken and return:
+  - The timestamp (HH:MM:SS.mmm)
+  - The frame number
+  - The extracted/transcribed text that matched
+  - A JPEG image of that frame
+  - A match confidence score
+
+
+2. PROBLEM STATEMENT
+--------------------
+A user provides a publicly accessible video URL and a piece of dialogue text.
+The system must search the entire video - without knowing in advance where the
+dialogue appears - and identify the precise video frame at which the target
+dialogue is spoken or displayed.
+
+This is not a simple string search. The video could be hours long. We cannot
+read the audio directly as text. We do not know if captions exist. The dialogue
+text provided by the user may not be word-perfect either.
+
+
+3. INPUT
+--------
+- video_url : A publicly accessible HTTP/HTTPS video URL (e.g. YouTube, Vimeo,
+              OK.ru, or any URL yt-dlp can download).
+- target    : The line of dialogue text to locate (1 to 1000 characters).
+
+Both are submitted via HTTP POST to /api/v1/detect.
+
+
+4. EXPECTED OUTPUT
+------------------
+A JSON response containing:
+  - timestamp           : "00:01:23.456" - when the dialogue occurs
+  - frame_number        : integer frame index (e.g. 2085)
+  - extracted_text      : the actual transcribed text that matched
+  - frame_image         : URL path to the saved JPEG frame
+  - score               : match confidence 0-100
+  - confidence          : "high", "medium", or "low"
+  - threshold_passed    : true if score >= MATCH_THRESHOLD (default 82)
+  - caution             : warning message if score is below threshold
+  - processing_time_seconds : how long the request took
+
+The output frame image is saved under outputs/job_<uuid>/matched_frame.jpg.
+
+
+5. OVERALL PIPELINE
+-------------------
+Step 1  - Validate inputs (URL is public, target is non-empty)
+Step 2  - Download video via yt-dlp
+Step 3  - Try to get captions (WebVTT subtitles) from the provider
+Step 4  - If captions exist and match well -> use them
+Step 5  - If captions are missing or score is low -> transcribe audio with Whisper
+Step 6  - Score all transcript segments against the target dialogue
+Step 7  - Pick the best-scoring segment (earliest occurrence if tied)
+Step 8  - Resolve the exact time window for that segment
+Step 9  - Sample frames in that window, pick the best frame
+Step 10 - Save the frame, build the result, return it
+
+
+6. DETAILED STEP-BY-STEP APPROACH
+----------------------------------
+
+STEP 1 - Validate
+  The URL must be http/https and not localhost or a private IP.
+  The target must contain real text, not just whitespace.
+
+STEP 2 - Download
+  yt-dlp downloads the video to a unique job directory:
+  outputs/job_<uuid>/source.<ext>
+  The downloader tries multiple format strategies (best quality <= max height,
+  adaptive/HLS streams, progressive MP4) and multiple HTTP transport profiles
+  (browser TLS impersonation via curl_cffi, then plain Python requests).
+  If the provider blocks one approach, it tries the next automatically.
+  MAX_VIDEO_HEIGHT (default 720p) keeps file sizes manageable.
+
+STEP 3 - Captions
+  yt-dlp also attempts to download WebVTT subtitle files alongside the video.
+  If the provider offers captions, they are saved as *.vtt files.
+  SubtitleExtractor parses these into (text, start_seconds, end_seconds) tuples.
+
+STEP 4 - Caption matching
+  SemanticMatcher scores each caption segment against the target.
+  It combines:
+    a) rapidfuzz fuzzy string similarity ratio
+    b) word overlap (Jaccard similarity)
+    c) exact substring check (gives 100 if target is fully inside segment)
+  Text is normalized first: lowercased, punctuation stripped, whitespace collapsed.
+  CandidateRanker picks the highest-scoring segment. Ties prefer earliest occurrence.
+  VoiceActivityFilter removes empty or zero-duration segments before scoring.
+
+STEP 5 - Whisper fallback
+  If no captions exist, or if the best caption score < MATCH_THRESHOLD:
+    faster-whisper transcribes the downloaded video file.
+    Model is loaded lazily (only when needed).
+    Device is set to "auto" (GPU if CUDA is available, otherwise CPU).
+    Compute type is "int8" for efficiency.
+    word_timestamps=True and vad_filter=True are enabled.
+    The result is a list of (text, start, end) segments, same shape as captions.
+  Whisper result replaces captions if the Whisper score is higher.
+
+STEP 6 - Scoring
+  SemanticMatcher scores every segment from captions or Whisper.
+  The score is a 0-100 number.
+  CandidateRanker sorts by (-score, start_seconds) and returns the top result.
+  If score < MATCH_THRESHOLD, it is still returned (not discarded) with a caution.
+
+STEP 7 - Timestamp resolution
+  TimestampResolver.resolve_window() converts the matched segment into a
+  padded search window:
+    - anchor: slightly into the utterance (not at the very first moment)
+    - search_start: 0.35s before segment start (ASR jitter padding)
+    - search_end: 0.45s after segment end
+    - Minimum window width: 0.8s
+    - Maximum window width: 2.4s
+  If the target is a short phrase inside a long segment, the resolver
+  narrows the anchor to the approximate position of those words within
+  the segment using linear interpolation.
+
+STEP 8 - Frame extraction
+  FrameExtractor samples 11 frames evenly spaced across the search window.
+  For each sampled frame it computes:
+    - Brightness (skip near-black and near-white frames)
+    - Sharpness (Laplacian variance on the picture area, excluding bottom caption band)
+    - Scene stability (frame difference vs neighbours; penalizes cuts/transitions)
+    - Temporal proximity to the anchor time (Gaussian weight)
+    - Scene consistency (prefer frames in the same scene as the anchor)
+  The frame with the highest composite score is saved as matched_frame.jpg.
+  OpenCV (cv2) handles video decoding and image writing.
+
+STEP 9 - Output
+  result.json and matched_frame.jpg are saved under outputs/job_<uuid>/.
+  The API returns the DetectionResult JSON.
+  The frontend displays the result including the frame image preview.
+
+
+7. WHY FULL-VIDEO SEARCH IS NECESSARY
+--------------------------------------
+The user provides only the dialogue text and the video URL. We do not know:
+  - Where in the video the dialogue appears
+  - Whether it appears near the beginning, middle, or end
+  - Whether captions exist at all
+
+So we must search the full video. We do this by transcribing audio across the
+entire video (Whisper processes the whole file) or by using captions that already
+cover the full video timeline.
+
+
+8. COARSE-TO-FINE SEARCH EXPLANATION
+--------------------------------------
+The system uses a two-phase approach:
+
+COARSE PHASE - Audio/text-level search:
+  Process the entire video audio to get a list of transcript segments with times.
+  This is fast compared to frame-level processing because we only analyse audio
+  (or pre-existing captions), not individual video frames.
+  The best matching segment gives us an approximate time window.
+
+FINE PHASE - Frame-level search within the window:
+  Once we know roughly when the dialogue happens (e.g. 01:23.4 to 01:25.2),
+  we sample only 11 frames in that short window.
+  We apply quality scoring to pick the best frame.
+  This avoids decoding every single frame of the video.
+
+This is efficient: for a 2-hour video at 25fps = 180,000 frames, we only
+decode ~11 frames rather than all 180,000.
+
+
+9. OCR ROLE
+-----------
+This project does NOT use OCR (optical character recognition) to read on-screen
+text from video frames. Instead:
+  - Captions (WebVTT text files) are parsed directly as text.
+  - Audio is transcribed with Whisper to get spoken dialogue as text.
+  - OpenCV is used only to decode, score, and save frames - not to read text.
+
+The frame quality scoring uses image processing (brightness, sharpness,
+scene differences) but does NOT attempt to read any text from the frame.
+
+Note: The project requirements mention "on-screen text/dialogue detection" but
+the actual implementation focuses on SPOKEN dialogue detection via audio
+transcription. If on-screen text (e.g. hardcoded subtitles burned into the
+video) needs to be detected, an OCR library like EasyOCR or pytesseract would
+need to be added.
+
+
+10. CANDIDATE REGION DETECTION
+--------------------------------
+After downloading:
+  1. Try WebVTT captions -> list of (text, start, end) candidates
+  2. Score all candidates against target with SemanticMatcher
+  3. If best score < MATCH_THRESHOLD -> run Whisper on full audio
+  4. Score Whisper candidates -> pick the best
+  5. The winning candidate defines the candidate time region
+
+
+11. DENSE FRAME SEARCH
+-----------------------
+Within the candidate time region (typically 0.8-2.4 seconds):
+  - 11 frames are sampled at evenly spaced times
+  - Each frame is scored on brightness, sharpness, stability, temporal proximity
+  - The bottom 18% of each frame (caption band) is excluded from sharpness scoring
+  - The best-scoring frame is selected
+
+
+12. TEMPORAL VALIDATION
+------------------------
+The TimestampResolver adds padding around the raw ASR timestamp because:
+  - ASR (Whisper) timestamps are approximate, not frame-accurate
+  - A cut exactly at the start timestamp could be picked by accident
+  - Padding ensures we sample frames that are definitely in-speech
+
+The frame extractor also tracks scene changes between samples and penalizes
+frames from a different scene than the anchor, which prevents picking a
+frame from a cut/transition at the edge of the window.
+
+
+13. HOW THE FINAL FRAME IS SELECTED
+-------------------------------------
+1. Candidate time window computed by TimestampResolver
+2. 11 frames sampled across that window
+3. Each frame scored:
+     score = log(sharpness+1) * temporal_weight * stability_weight
+             * scene_weight * brightness_weight
+4. Frame with highest score is saved as the result
+5. If all frames fail quality checks -> fallback to the frame closest to anchor
+6. ResultValidator confirms the image file exists and is non-empty
+
+
+14. HANDLING DIFFERENT VIDEOS / DIALOGUES
+------------------------------------------
+- Any public video URL supported by yt-dlp works (YouTube, Vimeo, OK.ru, etc.)
+- No video or dialogue is hardcoded
+- Multiple transport strategies are tried automatically
+- Captions are used if available (faster, often more accurate)
+- Whisper fallback works for videos without captions
+- The target dialogue is passed by the user at runtime - not hardcoded
+- Text normalization (lowercase, strip punctuation) makes matching robust to
+  minor formatting differences between the user's input and the transcript
+
+
+15. DEPENDENCY OVERVIEW
+------------------------
+Package                  Why it is needed
+------------------------ --------------------------------------------------
+fastapi                  HTTP API framework
+uvicorn[standard]        ASGI server to run FastAPI
+pydantic                 Request/response validation and settings models
+pydantic-settings        Load .env into typed Settings class
+yt-dlp                   Download public videos + captions
+curl_cffi                Browser TLS impersonation for anti-bot hosts
+opencv-python-headless   Video decoding and frame image writing
+faster-whisper           Audio transcription (Whisper on CPU or GPU)
+rapidfuzz                Fast fuzzy string matching
+python-dotenv            Load .env file for local development
+imageio-ffmpeg           Bundled FFmpeg binary (fallback if FFmpeg not on PATH)
+react + vite             Web frontend
+FFmpeg (system)          Required by yt-dlp for muxing audio+video streams
+
+Whisper model weights are downloaded automatically on first use from Hugging Face.
+Default model: "tiny" in .env (overrides "small" from .env.example).
+Model options: tiny (~75MB), base (~145MB), small (~465MB), medium (~1.5GB).
+
+
+16. CURRENT LIMITATIONS
+------------------------
+a) Audio-only approach: no OCR on burned-in subtitles or title cards
+b) Whisper timestamps are approximate; accuracy depends on model size
+c) Sparse frame sampling (11 frames in ~2 seconds) can miss very brief frames
+d) Music videos with lyrics: audio transcription may misread sung lyrics
+e) Videos with no English audio/captions will produce poor Whisper results
+f) Public video providers may block downloads (403, region locks, login walls)
+g) Large videos take longer (download + transcription time)
+h) No GPU by default; Whisper runs on CPU which is slower for large models
+i) The match score is lexical (text similarity), not semantic meaning
+j) If the same dialogue appears multiple times, the system returns the earliest
+   occurrence - this may not always be the intended one
+
+
+17. POTENTIAL IMPROVEMENTS
+---------------------------
+a) Add OCR (e.g. EasyOCR) to read burned-in subtitles for music videos
+b) Use larger Whisper model for better accuracy (at cost of speed/memory)
+c) GPU support is already coded (device="auto"); just needs CUDA installed
+d) Add a progress stream (WebSocket or SSE) for better UX on long videos
+e) Support local video file uploads instead of only public URLs
+f) Cache Whisper model in memory between requests for faster repeat queries
+g) Add language detection and multilingual support
+h) Word-level timestamps (already requested, vad_filter=True) could allow
+   even more precise frame windows
+i) For music videos: combine audio transcription with OCR for better coverage
+
+
+18. SIMPLE EXPLANATION FOR AN INTERVIEW
+-----------------------------------------
+"The project takes a video URL and a line of dialogue, and finds the exact
+moment in the video when that line is spoken.
+
+Here is how it works in plain terms:
+
+1. We download the video using a library called yt-dlp, which can download
+   from YouTube, Vimeo, and hundreds of other public sites.
+
+2. We look for subtitle files - if the video has captions, we read those.
+   Captions already tell us which words were said at which time, so this is fast.
+
+3. If there are no captions, or the captions do not match well, we run the
+   audio through a speech-to-text model called Whisper. It listens to the
+   whole video and gives us a list of what was said and when.
+
+4. We compare every transcript segment against the target dialogue using
+   fuzzy string matching - so even if Whisper got a word slightly wrong,
+   we can still find the closest match.
+
+5. Once we know roughly when the dialogue is spoken, we zoom into that
+   short window (about 1-2 seconds) and pick the best video frame.
+   We score frames on brightness, sharpness, and scene stability - we
+   do not want a blurry or transitioning frame.
+
+6. We return the timestamp, frame number, matching text, and a saved
+   image of that frame.
+
+The main design choice is captions-first: captions are fast and accurate when
+available. Whisper is the fallback for videos without them. This keeps the
+system flexible - it works for almost any public video without any manual setup."
+
+
