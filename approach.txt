@@ -280,51 +280,5 @@ j) If the same dialogue appears multiple times, the system returns the earliest
    occurrence - this may not always be the intended one
 
 
-17. POTENTIAL IMPROVEMENTS
----------------------------
-a) Add OCR (e.g. EasyOCR) to read burned-in subtitles for music videos
-b) Use larger Whisper model for better accuracy (at cost of speed/memory)
-c) GPU support is already coded (device="auto"); just needs CUDA installed
-d) Add a progress stream (WebSocket or SSE) for better UX on long videos
-e) Support local video file uploads instead of only public URLs
-f) Cache Whisper model in memory between requests for faster repeat queries
-g) Add language detection and multilingual support
-h) Word-level timestamps (already requested, vad_filter=True) could allow
-   even more precise frame windows
-i) For music videos: combine audio transcription with OCR for better coverage
-
-
-18. SIMPLE EXPLANATION FOR AN INTERVIEW
------------------------------------------
-"The project takes a video URL and a line of dialogue, and finds the exact
-moment in the video when that line is spoken.
-
-Here is how it works in plain terms:
-
-1. We download the video using a library called yt-dlp, which can download
-   from YouTube, Vimeo, and hundreds of other public sites.
-
-2. We look for subtitle files - if the video has captions, we read those.
-   Captions already tell us which words were said at which time, so this is fast.
-
-3. If there are no captions, or the captions do not match well, we run the
-   audio through a speech-to-text model called Whisper. It listens to the
-   whole video and gives us a list of what was said and when.
-
-4. We compare every transcript segment against the target dialogue using
-   fuzzy string matching - so even if Whisper got a word slightly wrong,
-   we can still find the closest match.
-
-5. Once we know roughly when the dialogue is spoken, we zoom into that
-   short window (about 1-2 seconds) and pick the best video frame.
-   We score frames on brightness, sharpness, and scene stability - we
-   do not want a blurry or transitioning frame.
-
-6. We return the timestamp, frame number, matching text, and a saved
-   image of that frame.
-
-The main design choice is captions-first: captions are fast and accurate when
-available. Whisper is the fallback for videos without them. This keeps the
-system flexible - it works for almost any public video without any manual setup."
 
 

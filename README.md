@@ -332,17 +332,14 @@ npm run build
 ### A. Can a new person clone and run it right now?
 **YES**. The repository is highly portable and follows standard conventions. However, the system relies on FFmpeg for video processing, which requires either a system installation or the imageio-ffmpeg fallback (which works but is sometimes less robust than a native installation).
 
-### B. What is missing?
-- Explicit instructions for enabling GPU/CUDA acceleration for Whisper (the code uses device="auto", but the user must install the correct cuBLAS/CUDA libraries).
-- A note about how large the Whisper model download will be on first run.
 
-### C. Dependency List
+### B. Dependency List
 **Python (Core)**: fastapi, uvicorn, pydantic, pydantic-settings (API Framework)
 **Media & Processing**: yt-dlp (Downloading), opencv-python-headless (Frame extraction), faster-whisper (Audio Transcription), imageio-ffmpeg (Muxing fallback)
 **Text & Network**: rapidfuzz (Fuzzy matching), curl_cffi (Browser impersonation)
 **Frontend**: react, vite
 
-### D. Dependency Size Chart
+### C. Dependency Size Chart
 
 | Dependency / Component | Version | Approx. Download | Approx. Installed | Required? | Purpose |
 |------------------------|---------|-----------------:|------------------:|-----------|---------|
@@ -353,56 +350,24 @@ npm run build
 | Node.js / React (UI)   | latest  | 60 MB            | 200 MB            | Yes       | Frontend application |
 | **Whisper Model (Small)** | N/A  | **461 MB**       | **461 MB**        | Yes       | ML model weights (downloaded on first run) |
 
-### E. Total Estimated Setup Size
+### D. Total Estimated Setup Size
 - **Total Dependency Download**: ~170 MB
 - **Total Installed Environment Size**: ~575 MB (Python + Node.js)
 - **Additional Model/Asset Size**: ~461 MB (Whisper 'small' model)
 - **Total Disk Space Required**: ~1.1 GB (Excluding downloaded job videos, which are cleaned up manually).
 
-### F. Required System Software
+### E. Required System Software
 - Python 3.10+
 - Node.js 20+
 - FFmpeg (System installation strongly recommended, though imageio-ffmpeg acts as a fallback).
 
-### G. Required Models/Assets
+### F. Required Models/Assets
 The faster-whisper library automatically downloads the specified model (default: small) from Hugging Face on the first run.
 
-### H. Environment Variables/Secrets
+### G. Environment Variables/Secrets
 No hardcoded secrets exist. Handled cleanly via .env (tracked .env.example provided).
 
-### I. Machine-Specific Issues
-**None Found.** The codebase cleanly uses Path(__file__) to resolve relative directories. No absolute paths, hardcoded Windows/Linux strings, or hardcoded usernames were found.
 
-### J. Files Added/Updated During Audit
-1.  approach.txt: Added for interview preparation and architectural reference.
-2. .gitignore: Updated to comprehensively cover model caches, generated output folders, videos, and OS files.
-3. README.md: Updated to include this audit report.
 
-### K. Exact Changes Recommended & Made
-- Ensured outputs/, *.mp4, .cache/, and faster_whisper_models/ were properly ignored in Git to prevent accidental enormous commits on a fresh machine.
-- Detailed the Coarse-to-Fine architecture in approach.txt for clarity.
 
-### L. Interview Questions and Answers (Preparation)
-**Q: Explain your project in simple terms.**
-A: It takes a public video URL and a line of dialogue, downloads the video, finds exactly when that dialogue is spoken using captions or AI transcription, and extracts the best video frame for that moment.
 
-**Q: What is the overall pipeline?**
-A: Download video -> Extract Captions (if available) -> Transcribe audio with Whisper (if no captions) -> Fuzzy-match text to find the timestamp -> Extract 11 frames around that time -> Score frames for quality -> Return the best one.
-
-**Q: Why use coarse-to-fine search?**
-A: Processing every single video frame (which could be hundreds of thousands of frames) is extremely slow. By doing a "coarse" search on the audio/text first, we narrow down the target to a 1-2 second window. Then we only do a "fine" search on ~11 frames.
-
-**Q: How do you handle OCR mistakes?**
-A: We don't actually use OCR on the visual frames! We rely on WebVTT captions or Whisper audio transcription. To handle ASR (transcription) mistakes, we use a fuzzy string matching library (rapidfuzz) instead of exact substring matching.
-
-**Q: Why is temporal validation needed?**
-A: ASR timestamps are approximate. A spoken word might be tagged at 1:23.00, but visually the scene might cut at 1:23.10. We pad the search window and evaluate the frame's scene stability so we don't accidentally return a blurry transition frame.
-
-**Q: Which dependency consumes the most space?**
-A: The Whisper ML model weights. Even the 'small' model is ~461 MB.
-
-**Q: Does the project require a GPU?**
-A: No, it runs on CPU by default (using int8 compute types). However, if CUDA is installed, faster-whisper will automatically utilize the GPU, speeding up transcription significantly.
-
-**Q: How would you improve accuracy?**
-A: 1. Add actual OCR (like EasyOCR) for stylized on-screen text (e.g., music video lyrics). 2. Use a larger Whisper model. 3. Use word-level timestamps to narrow the candidate window even further.
