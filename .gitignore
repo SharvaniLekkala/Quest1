@@ -1,8 +1,22 @@
+# ── Python ───────────────────────────────────────────────────────────────────
 .venv/
+venv/
+env/
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# ── Secrets / credentials ─────────────────────────────────────────────────────
 .env
-.env.*
+.env.local
+.env.*.local
+# Keep the template
 !.env.example
 *.pem
 *.key
@@ -12,10 +26,41 @@ secrets/
 credentials/
 cookies.txt
 *-cookies.txt
+
+# ── Generated runtime outputs (downloaded videos, frames, job folders) ────────
 outputs/
+*.mp4
+*.mkv
+*.webm
+*.mov
+*.avi
+*.m4v
 *.part
 *.ytdl
-.pytest_cache/
+*.json.part
+
+# ── Whisper / Hugging Face model caches ───────────────────────────────────────
+# These are downloaded automatically; do not commit gigabytes of weights
+.cache/
+~/.cache/huggingface/
+faster_whisper_models/
+
+# ── Frontend ──────────────────────────────────────────────────────────────────
 frontend/node_modules/
 frontend/dist/
 frontend/.npm-cache/
+frontend/.vite/
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── IDE / OS ──────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.suo
+*.user
+Thumbs.db
+.DS_Store
+desktop.ini
